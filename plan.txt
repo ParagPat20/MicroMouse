@@ -1,0 +1,559 @@
+================================================================================
+MICROMOUSE MAZE SOLVING ROBOT - COMPREHENSIVE PLAN
+================================================================================
+
+PROJECT OVERVIEW:
+-----------------
+Goal: Build a micromouse robot that can:
+  1. Explore an unknown maze
+  2. Find the shortest path from start to goal using Dijkstra's algorithm
+  3. Execute the shortest path at maximum speed on second run
+
+BOT SPECIFICATIONS:
+-------------------
+- Wheel-to-wheel distance: 13.5 cm
+- Maze cell size: 30 cm (distance between two walls)
+- Wheel diameter: 4 cm
+- Wheel circumference: π × 4 = 12.566 cm
+- Encoders: Left (D18, D19), Right (D27, D23)
+- IMU: MPU6050 (for heading correction)
+- Sensors: 5 Sharp IR sensors (L, R, F, CL, CR)
+- Display: OLED 128x32
+- LEDs: NeoPixel (6 LEDs, Pin 16)
+- Buzzer: Pin 17
+ - UI Buttons: BTN_MODE (D5), BTN_SELECT (D33)
+
+EXISTING CODE & FILE ROLES
+--------------------------
+- `HardwareTest/HardwareTest.ino`: single source of truth for encoder pins, MPU6050 wiring, and button wiring. All odometry and IMU code in the new system must reuse these assignments.
+- `ObstacleAvoid/ObstacleAvoid.ino`: single source of truth for motor driver pins and IR sensor pins, plus a proven obstacle-avoidance loop. Free Run mode and sensor/motor layers must be based on this.
+- `MMRF/MMRF.ino`: currently only sets up NeoPixel and OLED pins. It will become the new **main micromouse sketch** that:
+  * Keeps the LED + display handling already here.
+  * Reuses pin definitions from `HardwareTest` and `ObstacleAvoid` (no new conflicting pin maps).
+  * Orchestrates modes: Menu, Explore, Speed Run, Explore+SpeedRun, Free Run, Diagnostics.
+- New code for maze mapping, pathfinding, and UI will live in **new files/folders** (for example helper `.h/.cpp` modules included by `MMRF.ino`), so the old test sketches remain intact and usable.
+
+================================================================================
+PHASE 1: MAZE REPRESENTATION & DATA STRUCTURES
+================================================================================
+
+1.1 MAZE GRID REPRESENTATION
+-----------------------------
+- Use 2D grid: Each cell is 30cm × 30cm
+- Grid size: Assume max 16×16 (adjustable)
+- Cell structure:
+  * x, y coordinates (0,0 = start)
+  * Walls: North, South, East, West (boolean)
+  * Visited flag
+  * Distance from start (for Dijkstra)
+  * Parent cell (for path reconstruction)
+
+1.2 DATA STRUCTURES NEEDED
+---------------------------
+- Cell struct/class:
+  * uint8_t x, y
+  * bool walls[4]  // N, E, S, W
+  * bool visited
+  * uint16_t distance  // Dijkstra distance
+  * Cell* parent      // For path reconstruction
+  
+- Maze class:
+  * Cell grid[16][16]
+  * uint8_t currentX, currentY
+  * uint8_t currentHeading  // 0=N, 1=E, 2=S, 3=W
+  * uint8_t startX, startY
+  * uint8_t goalX, goalY
+  * bool explorationComplete
+  * bool pathFound
+
+================================================================================
+PHASE 2: DEAD RECKONING SYSTEM
+================================================================================
+
+2.1 ENCODER-BASED ODOMETRY
+---------------------------
+- Track encoder ticks for both wheels
+- Calculate distance traveled:
+  * Left distance = (leftTicks / ticksPerRevolution) × wheelCircumference
+  * Right distance = (rightTicks / ticksPerRevolution) × wheelCircumference
+  * Average distance = (leftDistance + rightDistance) / 2
+  
+- Calculate heading change:
+  * Heading change = (rightDistance - leftDistance) / wheelBase
+  * wheelBase = 13.5 cm
+
+2.2 MPU6050 INTEGRATION
+------------------------
+- Use gyro Z-axis for heading correction
+- Complementary filter: Combine encoder-based heading with gyro
+- Formula: heading = 0.95 × encoderHeading + 0.05 × gyroHeading
+- Calibrate gyro offset at startup (already done in HardwareTest)
+
+2.3 POSITION TRACKING
+---------------------
+- Maintain current position (x, y) in grid coordinates
+- Update position based on:
+  * Distance traveled (from encoders)
+  * Current heading (from IMU + encoders)
+  * Cell boundaries (30cm per cell)
+
+- When crossing cell boundary:
+  * Update grid coordinates
+  * Reset distance counter for next cell
+
+2.4 CALIBRATION PARAMETERS
+---------------------------
+- Ticks per revolution: Measure/test (typically 12-20 for N20 encoders)
+- Wheel diameter: 4 cm (verify)
+- Wheel base: 13.5 cm (verify)
+- Cell size: 30 cm (verify with test runs)
+
+================================================================================
+PHASE 3: WALL DETECTION & MAPPING
+================================================================================
+
+3.1 SENSOR MAPPING TO WALLS
+----------------------------
+Based on current heading:
+- Heading North (0°):
+  * Front sensor → North wall
+  * Right sensor → East wall
+  * Left sensor → West wall
+  * Cross sensors → Diagonals (for early detection)
+
+- Heading East (90°):
+  * Front sensor → East wall
+  * Right sensor → South wall
+  * Left sensor → North wall
+
+- Heading South (180°):
+  * Front sensor → South wall
+  * Right sensor → West wall
+  * Left sensor → East wall
+
+- Heading West (270°):
+  * Front sensor → West wall
+  * Right sensor → North wall
+  * Left sensor → South wall
+
+3.2 WALL DETECTION THRESHOLDS
+------------------------------
+- Use existing thresholds from ObstacleAvoid.ino:
+  * OBSTACLE_CRITICAL: 2500 (< 6cm) - Wall definitely present
+  * OBSTACLE_NEAR: 1800 (~10cm) - Wall detected
+  * OBSTACLE_DETECTED: 1000 (~20cm) - Wall exists
+  * WALL_LOST: 600 (>25cm) - No wall
+
+- Mapping logic:
+  * If sensor > OBSTACLE_DETECTED → Wall present
+  * If sensor < WALL_LOST → No wall (passage open)
+
+3.3 CELL EXPLORATION
+---------------------
+- When entering a new cell:
+  1. Stop and read all sensors
+  2. Map walls based on current heading
+  3. Mark cell as visited
+  4. Update maze grid with wall information
+  5. Check if goal reached (center of maze or specified location)
+
+================================================================================
+PHASE 4: EXPLORATION ALGORITHM
+================================================================================
+
+4.1 EXPLORATION STRATEGY
+-------------------------
+Option A: Flood Fill Algorithm (Recommended)
+- Maintain distance map from start
+- Always move to unvisited cell with shortest distance
+- If no unvisited neighbors, backtrack to previous cell
+- Continue until goal found or all reachable cells explored
+
+Option B: Wall Following (Simpler)
+- Follow right-hand rule or left-hand rule
+- Map walls as robot moves
+- Less efficient but simpler to implement
+
+RECOMMENDATION: Use Flood Fill for optimal exploration
+
+4.2 MOVEMENT COMMANDS
+---------------------
+- moveForwardOneCell(): Move exactly 30cm forward
+- turnLeft90(): Turn 90° left (update heading)
+- turnRight90(): Turn 90° right (update heading)
+- turnAround180(): Turn 180° (for backtracking)
+
+4.3 PATH STACK FOR BACKTRACKING
+--------------------------------
+- Maintain stack of visited cells
+- When stuck (no unvisited neighbors):
+  * Pop from stack
+  * Calculate path back to popped cell
+  * Execute backtracking path
+  * Continue exploration
+
+================================================================================
+PHASE 5: PATH PLANNING (DIJKSTRA'S ALGORITHM)
+================================================================================
+
+5.1 DIJKSTRA IMPLEMENTATION
+----------------------------
+- After exploration completes:
+  1. Initialize all cells with distance = INFINITY
+  2. Set start cell distance = 0
+  3. Use priority queue (min-heap) for unvisited cells
+  4. For each cell, check neighbors:
+     * If no wall between cells, calculate edge weight
+     * Edge weight = 1 (each cell move)
+  5. Update distances and parent pointers
+  6. Continue until goal reached or all cells processed
+
+5.2 PATH RECONSTRUCTION
+-----------------------
+- Start from goal cell
+- Follow parent pointers back to start
+- Reverse path to get start → goal sequence
+- Store path as sequence of moves: FORWARD, TURN_LEFT, TURN_RIGHT, etc.
+
+5.3 PATH OPTIMIZATION
+---------------------
+- Remove redundant turns (e.g., LEFT + LEFT = 180° turn)
+- Combine consecutive forward moves
+- Final path: List of optimized moves
+
+================================================================================
+PHASE 6: SPEED RUN IMPLEMENTATION
+================================================================================
+
+6.1 SPEED RUN MODE
+------------------
+- After shortest path is found:
+  1. Switch to SPEED_RUN mode
+  2. Load optimized path
+  3. Execute moves at maximum speed
+  4. Use dead reckoning for precise positioning
+  5. Minimal sensor checking (only for safety)
+
+6.2 HIGH-SPEED PARAMETERS
+--------------------------
+- SPEED_MAX: 255 (maximum PWM)
+- Reduced braking distances
+- Faster turn execution
+- Predictive control based on known path
+
+6.3 SAFETY MECHANISMS
+---------------------
+- Emergency stop if unexpected wall detected
+- Speed reduction before turns
+- Encoder-based position verification
+- MPU6050 heading correction during turns
+
+================================================================================
+PHASE 7: STATE MACHINE DESIGN
+================================================================================
+
+7.1 MAIN STATES
+---------------
+enum RobotState {
+  STATE_INIT,              // Initialization
+  STATE_CALIBRATE,         // Calibrate sensors/IMU
+  STATE_MENU,              // Show UI menu, wait for button selection
+  STATE_EXPLORE,           // Exploration phase
+  STATE_PLAN_PATH,         // Calculate shortest path
+  STATE_SPEED_RUN,         // Execute speed run
+  STATE_FINISHED,          // Goal reached
+  STATE_ERROR              // Error state
+};
+
+7.2 EXPLORATION SUB-STATES
+---------------------------
+enum ExploreState {
+  EXPLORE_MOVE_FORWARD,    // Moving forward to next cell
+  EXPLORE_CHECK_WALLS,     // Reading sensors and mapping
+  EXPLORE_DECIDE_NEXT,     // Choose next cell to explore
+  EXPLORE_TURN,            // Executing turn
+  EXPLORE_BACKTRACK,       // Backtracking to previous cell
+  EXPLORE_GOAL_FOUND       // Goal reached during exploration
+};
+
+7.3 UI / MENU STATES (BUTTON-DRIVEN)
+------------------------------------
+- Two hardware buttons available:
+  * BTN_MODE  (D5)  - move cursor / change option
+  * BTN_SELECT (D33) - confirm selection / start
+
+- Menu appears on OLED after initialization and calibration:
+  1) \"Explore Maze\"         (full exploration + mapping)
+  2) \"Speed Run\"            (use saved shortest path)
+  3) \"Explore + SpeedRun\"   (explore, plan, then immediately speed run)
+  4) \"Diagnostics\"          (sensor + encoder check)
+
+- Basic menu interaction:
+  * Short press BTN_MODE: cycle through menu items
+  * Short press BTN_SELECT: select highlighted menu item
+  * Long press BTN_SELECT (e.g., >2s): emergency stop / go back to menu
+
+- State transitions (high level):
+  * STATE_INIT → STATE_CALIBRATE → STATE_MENU
+  * STATE_MENU + \"Explore Maze\"    → STATE_EXPLORE
+  * STATE_MENU + \"Speed Run\"       → STATE_SPEED_RUN (only if path stored)
+  * STATE_MENU + \"Explore + SpeedRun\" → STATE_EXPLORE → STATE_PLAN_PATH → STATE_SPEED_RUN
+  * Any runtime error → STATE_ERROR → STATE_MENU (after user acknowledgement)
+
+================================================================================
+FREE RUN MODE (MANUAL / DEMO)
+-----------------------------
+- Optional mode that does not use maze map.
+- Robot uses existing obstacle avoidance behavior to roam freely.
+- Activated via "Free Run" option in the OLED menu (BTN_MODE / BTN_SELECT).
+- Internally can reuse logic from ObstacleAvoid.ino with safety limits.
+
+================================================================================
+PHASE 8: INTEGRATION & IMPLEMENTATION STEPS
+================================================================================
+
+STEP 1: SETUP BASIC STRUCTURES
+-------------------------------
+- Create Cell struct
+- Create Maze class with grid[16][16]
+- Initialize with start position (0,0)
+- Set initial heading (North = 0)
+
+STEP 2: IMPLEMENT DEAD RECKONING
+---------------------------------
+- Integrate encoder reading (from HardwareTest.ino)
+- Integrate MPU6050 (from HardwareTest.ino)
+- Implement position tracking function
+- Test: Move forward 30cm, verify position update
+- Test: Turn 90°, verify heading update
+
+STEP 3: IMPLEMENT WALL DETECTION
+---------------------------------
+- Adapt sensor reading from ObstacleAvoid.ino
+- Map sensors to walls based on heading
+- Update maze grid with wall information
+- Test: Stand in cell, detect walls correctly
+
+STEP 4: IMPLEMENT BASIC MOVEMENT
+---------------------------------
+- moveForwardOneCell(): Use encoders to move exactly 30cm
+- turnLeft90() / turnRight90(): Use MPU6050 for precise 90° turn
+- Test: Move one cell forward, verify position
+- Test: Turn 90°, verify heading
+
+STEP 5: IMPLEMENT FLOOD FILL EXPLORATION
+----------------------------------------
+- Calculate distances from start
+- Choose next unvisited cell
+- Navigate to chosen cell
+- Backtrack when needed
+- Test: Explore small 3×3 maze
+
+STEP 6: IMPLEMENT DIJKSTRA PATH PLANNING
+-----------------------------------------
+- After exploration, run Dijkstra
+- Reconstruct path from start to goal
+- Optimize path (remove redundant moves)
+- Test: Verify shortest path correctness
+
+STEP 7: IMPLEMENT SPEED RUN
+---------------------------
+- Load optimized path
+- Execute moves at high speed
+- Use dead reckoning for precision
+- Test: Run speed run on known maze
+
+STEP 8: INTEGRATE DISPLAY & FEEDBACK
+-------------------------------------
+- Show current state on OLED
+- Show current position (x, y)
+- Show exploration progress
+- Show path length on speed run
+- Use NeoPixel for status indication
+
+================================================================================
+PHASE 9: KEY FUNCTIONS TO IMPLEMENT
+================================================================================
+
+9.1 CORE FUNCTIONS
+------------------
+- void initializeMaze()
+- void readSensors()
+- void detectWalls(uint8_t x, uint8_t y, uint8_t heading)
+- void updatePosition()  // Dead reckoning
+- void moveForwardOneCell()
+- void turnLeft90()
+- void turnRight90()
+- void exploreMaze()  // Main exploration loop
+- void floodFillUpdate()  // Update distance map
+- Cell* getNextUnvisitedNeighbor(uint8_t x, uint8_t y)
+- void backtrack()
+- void dijkstraPathfinding()
+- void reconstructPath()
+- void optimizePath()
+- void executeSpeedRun()
+
+9.2 HELPER FUNCTIONS
+--------------------
+- uint8_t getHeadingRelative(uint8_t dir)  // Convert absolute to relative
+- bool isValidCell(uint8_t x, uint8_t y)
+- bool hasWall(uint8_t x, uint8_t y, uint8_t direction)
+- float calculateDistance(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2)
+- void updateDisplay()
+- void updateNeoPixel(uint8_t state)
+
+================================================================================
+PHASE 10: TESTING & TUNING
+================================================================================
+
+10.1 UNIT TESTS
+---------------
+- Test dead reckoning accuracy (move 30cm, verify)
+- Test turn accuracy (turn 90°, verify heading)
+- Test wall detection (known maze, verify mapping)
+- Test flood fill (small maze, verify exploration)
+- Test Dijkstra (known maze, verify shortest path)
+
+10.2 INTEGRATION TESTS
+----------------------
+- Full exploration of 5×5 maze
+- Path planning on explored maze
+- Speed run execution
+
+10.3 TUNING PARAMETERS
+----------------------
+- Encoder ticks per revolution
+- MPU6050 complementary filter weights
+- Turn timing for 90° turns
+- Forward movement PID (if needed)
+- Sensor thresholds (fine-tune)
+
+================================================================================
+PHASE 11: OPTIMIZATIONS & ENHANCEMENTS
+================================================================================
+
+11.1 PERFORMANCE OPTIMIZATIONS
+-------------------------------
+- Use fixed-point arithmetic for position (avoid float)
+- Optimize Dijkstra with binary heap
+- Cache frequently accessed cells
+- Minimize sensor reads (only when needed)
+
+11.2 ENHANCEMENTS
+------------------
+- Multiple goal detection (center + corners)
+- Path smoothing (reduce number of turns)
+- Adaptive speed based on path curvature
+- Learning from multiple runs
+
+================================================================================
+PHASE 12: PYTHON GROUND STATION GUI
+================================================================================
+
+12.1 GOALS (ARDUPILOT-STYLE DESKTOP TOOL)
+-----------------------------------------
+- Python GUI running on a PC that connects to the robot over USB serial.
+- Capabilities similar to ArduPilot ground stations:
+  * Read and update configuration parameters (thresholds, speeds, gains, maze options).
+  * Live plots of telemetry (sensors, encoders, heading, state machine, maze progress).
+  * Real-time status view (state, mode, cell position, battery if available).
+  * Log recording and replay for offline analysis.
+
+12.2 COMMUNICATION PROTOCOL
+---------------------------
+- Transport: USB serial (same COM port as current Serial monitor).
+- Message design:
+  * Simple, human-readable frames (e.g. line-based JSON, CSV, or key=value pairs), OR
+  * Use an existing lightweight protocol from GitHub (e.g. a minimal MAVLink-like or custom telemetry library).
+- Two main classes of messages:
+  1) Telemetry → PC:
+     - Mode / state, sensor values, encoders, heading, current cell, maze-map snapshots.
+  2) Commands / Params → Robot:
+     - Set/get parameters (e.g. `THRESHOLD_LRF`, `BASE_SPEED`, PID gains, maze size).
+     - Mode changes (start explore, start speed run, enter free run, diagnostics).
+- On the robot side:
+  * Implement a small \"GroundStation\" handler that parses incoming lines and updates variables.
+  * Reuse / extend the existing serial command handling from `ObstacleAvoid.ino` and `HardwareTest.ino`.
+
+12.3 PYTHON GUI STACK
+---------------------
+- Use existing open-source Python GUI and plotting libraries:
+  * GUI: PyQt5/PySide6 or Tkinter (simpler) depending on preference.
+  * Plotting: PyQtGraph or Matplotlib for live graphs.
+  * Serial: `pyserial` for COM-port communication.
+- Keep GUI modular:
+  * Connection panel (port selection, baud rate, connect/disconnect).
+  * Parameter tree/table with load/save to JSON or YAML on PC.
+  * Live plots tab (select which signals to view: IR sensors, encoders, heading, speed).
+  * Maze view tab to visualize discovered maze and shortest path (simple 2D grid).
+
+12.4 FILE & FOLDER STRUCTURE (PC SIDE)
+--------------------------------------
+- New top-level folder, e.g. `GroundStation/`:
+  * `ground_station.py`          - main entry point.
+  * `telemetry_protocol.py`      - message formats, encode/decode.
+  * `params_model.py`            - holds parameters and handles sync with robot.
+  * `plots_view.py` / `maze_view.py` - plotting / maze visualization.
+  * `config/`                    - saved parameter sets, profiles, logs.
+- This tooling is independent of Arduino code but designed to talk to it via the shared protocol.
+
+12.5 INTEGRATION STEPS
+----------------------
+1) Define and implement a minimal serial protocol in the robot firmware (parameter get/set + basic telemetry).
+2) Create a small Python CLI tool to validate protocol (no GUI yet).
+3) Build the basic GUI (connect/disconnect, text console, simple param list).
+4) Add live graphs (PyQtGraph) and parameter editing.
+5) Add maze visualization once mapping is working on the robot.
+
+================================================================================
+NOTES & CONSIDERATIONS
+================================================================================
+
+- Goal Detection: Need to define how goal is detected
+  * Option 1: Center of maze (e.g., 7,7 in 16×16)
+  * Option 2: Specific sensor pattern
+  * Option 3: Time limit or manual trigger
+
+- Encoder Resolution: Need to measure actual ticks per revolution
+  * Typical N20: 12-20 ticks per revolution
+  * Test: Rotate wheel manually, count ticks
+
+- Cell Size Verification: Verify 30cm with test runs
+  * Move forward, count encoder ticks
+  * Adjust if needed
+
+- Turn Precision: 90° turns must be precise
+  * Use MPU6050 for feedback
+  * Fine-tune turn timing/distance
+
+- Memory Constraints: ESP32 has limited RAM
+  * Use uint8_t for coordinates (max 255)
+  * Optimize data structures
+  * Consider EEPROM for maze storage if needed
+
+================================================================================
+IMPLEMENTATION PRIORITY
+================================================================================
+
+HIGH PRIORITY:
+1. Dead reckoning system (encoders + MPU6050)
+2. Basic movement (forward one cell, turn 90°)
+3. Wall detection and mapping
+4. Simple exploration (wall following or basic flood fill)
+5. Dijkstra pathfinding
+6. Speed run execution
+
+MEDIUM PRIORITY:
+7. Path optimization
+8. Display integration
+9. NeoPixel status indication
+10. Error handling and recovery
+
+LOW PRIORITY:
+11. Advanced optimizations
+12. Multiple goal support
+13. Learning algorithms
+
+================================================================================
+END OF PLAN
+================================================================================

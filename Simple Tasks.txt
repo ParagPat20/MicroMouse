@@ -1,0 +1,161 @@
+================================================================================
+MICROMOUSE
+================================================================================
+
+
+--------------------------------------------------------------------------------
+PART A: TASKS
+--------------------------------------------------------------------------------
+
+TASK 1 - HARDWARE SETUP
+-----------------------
+- [ ] Assemble robot: mount motors, encoders, MPU6050, 5 IR sensors, OLED, NeoPixel, buzzer, buttons.
+- [ ] Wire encoders: Left (D18, D19), Right (D27, D23).
+- [ ] Wire MPU6050 (I2C) and note SDA/SCL pins.
+- [ ] Wire motor driver per ObstacleAvoid.ino; wire IR sensors per same file.
+- [ ] Wire OLED 128x32, NeoPixel (Pin 16), Buzzer (Pin 17), BTN_MODE (D5), BTN_SELECT (D33).
+- [ ] Measure and record: wheel diameter (target 4 cm), wheel base (target 13.5 cm), encoder ticks per revolution (typical 12–20 for N20).
+
+TASK 2 - CALIBRATION & MEASUREMENT
+----------------------------------
+- [ ] Run HardwareTest.ino: verify encoders count, MPU6050 gives stable heading, buttons respond.
+- [ ] Run MotorTest.ino: verify both wheels turn correct direction and speed.
+- [ ] Run SensorRead.ino: verify all 5 IR sensors read; note values at 0 cm, 10 cm, 20 cm, 30 cm.
+- [ ] Measure encoder ticks for exactly 30 cm forward; record ticksPerRevolution and ticks per cell.
+- [ ] Measure turn: 90° left/right using MPU6050; note timing or PWM duration for consistent 90°.
+
+TASK 3 - MAZE & ENVIRONMENT
+----------------------------
+- [ ] Build or get a practice maze (e.g. 5×5 or 16×16) with 30 cm cell size.
+- [ ] Mark start cell (0,0) and goal (e.g. center or one corner).
+- [ ] Verify cell size (30 cm) with tape measure.
+
+TASK 4 - CODE IMPLEMENTATION (FOLLOW PLAN.TXT PHASES)
+----------------------------------------------------
+- [ ] Phase 1: Create Cell struct and Maze class (new .h/.cpp or in MMRF).
+- [ ] Phase 2: Implement dead reckoning (encoders + MPU6050) reusing HardwareTest.ino.
+- [ ] Phase 3: Implement wall detection and mapping using ObstacleAvoid.ino sensor logic.
+- [ ] Phase 4: Implement moveForwardOneCell, turnLeft90, turnRight90, then flood fill exploration.
+- [ ] Phase 5: Implement Dijkstra and path reconstruction in firmware.
+- [ ] Phase 6: Implement speed run mode with high-speed params and safety.
+- [ ] Phase 7: Implement state machine and menu (BTN_MODE / BTN_SELECT) from MMRF.ino.
+- [ ] Phase 8: Integrate display (OLED) and NeoPixel from MMRF.ino.
+
+TASK 5 - TESTING EXECUTION
+---------------------------
+- [ ] Run each test sketch (see Part B) in order and record results.
+- [ ] Run integration: full explore on 5×5, then path plan, then speed run.
+- [ ] Tune the following parameters (about 20 total; names to use in code/serial):
+      Dead reckoning: TICKS_PER_REVOLUTION, WHEEL_DIAMETER_CM, WHEEL_BASE_CM, CELL_SIZE_CM.
+      IMU/heading: GYRO_WEIGHT, ENCODER_WEIGHT (complementary filter, e.g. 0.05 and 0.95).
+      Turn: TURN_90_MS (or TURN_DURATION_MS), SPEED_TURN.
+      Sensor thresholds: OBSTACLE_CRITICAL, OBSTACLE_NEAR, OBSTACLE_DETECTED, WALL_LOST, THRESHOLD_LRF, THRESHOLD_CROSS, FRONT_WALL_STOP.
+      Speed: BASE_SPEED, MAX_SPEED, SPEED_FORWARD, SPEED_SLOW, SPEED_MAX (speed run).
+      PID (if used): KP, KD, KI.
+      Other: SPIKE_DROP (spike detection).
+
+TASK 6 - GROUND STATION (OPTIONAL)
+----------------------------------
+- [ ] Define serial protocol (telemetry + commands) in firmware and in Python.
+- [ ] Create GroundStation folder and files (see Part B).
+- [ ] Test connection with CLI tool, then add GUI, plots, maze view.
+
+--------------------------------------------------------------------------------
+PART B: FILES FOR TESTING (NAMES + DESCRIPTIONS & WORKINGS)
+--------------------------------------------------------------------------------
+
+---- EXISTING FILES (KEEP AND USE AS REFERENCE) ----
+
+HardwareTest/HardwareTest.ino
+- Description: Single source of truth for encoder pins (Left D18,D19; Right D27,D23), MPU6050 wiring, and button wiring (BTN_MODE D5, BTN_SELECT D33). Contains odometry and IMU test code.
+- Working: Reads encoder ticks for both wheels and MPU6050 heading; prints to Serial. Use to verify hardware and to copy pin #defines and reading logic into MMRF and dead-reckoning code.
+
+ObstacleAvoid/ObstacleAvoid.ino
+- Description: Single source of truth for motor driver pins and IR sensor pins. Implements obstacle-avoidance loop and thresholds (OBSTACLE_CRITICAL, OBSTACLE_NEAR, OBSTACLE_DETECTED, WALL_LOST).
+- Working: Reads 5 IR sensors, drives motors to avoid obstacles. Use for sensor/motor layer and threshold values in wall detection and Free Run mode.
+
+SensorRead/SensorRead.ino
+- Description: Reads and prints raw values from all 5 IR sensors (L, R, F, CL, CR).
+- Working: Loops over sensor pins, prints values to Serial. Use for sensor calibration and to confirm pin assignments before wall detection.
+
+MotorTest/MotorTest.ino
+- Description: Tests motor driver and wheel direction/speed.
+- Working: Runs left/right motors at set PWM; used to verify wiring and direction before movement primitives.
+
+MMRF/MMRF.ino
+- Description: Main micromouse sketch. Currently sets NeoPixel and OLED pins. Will orchestrate modes: Menu, Explore, Speed Run, Explore+SpeedRun, Free Run, Diagnostics.
+- Working: Include pin definitions from HardwareTest and ObstacleAvoid; add state machine, menu (buttons + OLED), and calls to maze/exploration/path/speed-run logic (in same file or in new modules).
+
+---- NEW FILES TO CREATE FOR TESTING ----
+
+DeadReckonTest/DeadReckonTest.ino
+- Description: Unit test for dead reckoning (encoders + MPU6050). Verifies position and heading after moving 30 cm and after 90° turns.
+- Working: Uses same encoder/IMU code as HardwareTest. Move forward 30 cm (by encoder count), print computed position and heading; then turn 90° (by IMU), print heading. Human checks: position ~(0,1) in cells, heading ~90° after one right turn.
+
+WallDetectTest/WallDetectTest.ino
+- Description: Unit test for wall detection and mapping. Verifies that sensor values are correctly mapped to N/E/S/W walls for current heading.
+- Working: Place robot in a known cell with known walls (e.g. wall North and East). Set heading (N/E/S/W) in code or by button; read sensors, map to walls, print wall state. Human verifies printed walls match physical layout.
+
+MovePrimitiveTest/MovePrimitiveTest.ino
+- Description: Unit test for movement primitives: moveForwardOneCell(), turnLeft90(), turnRight90(). No exploration, just repeated moves.
+- Working: Move forward one cell (30 cm by encoders), stop; turn 90° left; move forward; turn 90° right; etc. Print position and heading after each step. Human verifies cell position and heading match expectations.
+
+FloodFillTest/FloodFillTest.ino
+- Description: Unit test for flood fill exploration on a small (e.g. 3×3) maze. Verifies distance map and “next unvisited” choice.
+- Working: Run flood fill logic on a fixed small maze (walls set manually or from WallDetectTest). Print distance map and chosen next cell. Optionally drive robot in 3×3; human checks that it explores all reachable cells.
+
+DijkstraTest/DijkstraTest.ino
+- Description: Unit test for Dijkstra pathfinding and path reconstruction. Uses a known maze (e.g. 5×5) with known shortest path.
+- Working: Load or build a small maze in code, run Dijkstra from start to goal, reconstruct path, print path (list of moves). Human compares path length and sequence to known shortest path.
+
+SpeedRunTest/SpeedRunTest.ino
+- Description: Integration test for speed run. Executes a pre-defined short path at high speed with dead reckoning and minimal sensor check.
+- Working: Load a known path (e.g. 3–5 moves), run at SPEED_MAX, use encoders/IMU for position. Human verifies robot completes path without hitting walls and stays on course.
+
+IntegrationTest/IntegrationTest.ino  (OR use MMRF.ino in “test mode”)
+- Description: Full integration: explore 5×5 maze, run Dijkstra, run speed run. Optional: single sketch or a menu option in MMRF that runs explore → plan → speed run in sequence.
+- Working: Start at (0,0), explore until goal or full map, run Dijkstra, optimize path, execute speed run. Human checks: exploration covers maze, path is shortest, speed run completes without collision.
+
+---- GROUND STATION (PC) FILES ----
+
+GroundStation/ground_station.py
+- Description: Main entry point for Python ground station. Opens serial port, starts GUI (connection, params, plots, maze view).
+- Working: Connects to robot over USB serial; sends/receives per telemetry_protocol; launches parameter panel and live plots.
+
+GroundStation/telemetry_protocol.py
+- Description: Defines message formats for telemetry (robot → PC) and commands/params (PC → robot). Encode/decode functions.
+- Working: Parse lines (e.g. JSON or key=value); pack telemetry (state, sensors, encoders, heading, cell, maze snapshot); unpack set/get param and mode commands.
+
+GroundStation/params_model.py
+- Description: Holds parameter set (thresholds, speeds, PID, maze size). Syncs with robot via telemetry_protocol (get/set).
+- Working: Load/save params to JSON or YAML in config/; send get/set over serial; update local dict from robot replies.
+
+GroundStation/plots_view.py
+- Description: Live plots of telemetry: IR sensors, encoder ticks, heading, speed (PyQtGraph or Matplotlib).
+- Working: Subscribe to telemetry stream; update plots in real time; optional log to file for replay.
+
+GroundStation/maze_view.py
+- Description: 2D grid visualization of discovered maze and shortest path.
+- Working: Receive maze snapshot (or cell-by-cell updates) from robot; draw grid with walls and path; update as exploration or speed run progresses.
+
+GroundStation/config/
+- Description: Folder for saved parameter sets, profiles, and optional log files.
+- Working: Store JSON/YAML configs; optional CSV/log for recorded telemetry.
+
+--------------------------------------------------------------------------------
+PART C: QUICK REFERENCE - TEST ORDER
+--------------------------------------------------------------------------------
+1. HardwareTest.ino       → confirm encoders, IMU, buttons
+2. MotorTest.ino           → confirm motors
+3. SensorRead.ino          → confirm IR sensors
+4. DeadReckonTest.ino      → confirm 30 cm and 90° turn
+5. WallDetectTest.ino      → confirm wall mapping
+6. MovePrimitiveTest.ino   → confirm one-cell move and turns
+7. FloodFillTest.ino       → confirm exploration logic
+8. DijkstraTest.ino        → confirm shortest path
+9. SpeedRunTest.ino        → confirm high-speed run
+10. IntegrationTest / MMRF → full explore → plan → speed run
+
+--------------------------------------------------------------------------------
+END OF SIMPLE TASKS
+--------------------------------------------------------------------------------
