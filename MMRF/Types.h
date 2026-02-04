@@ -1,0 +1,41 @@
+#ifndef MMRF_TYPES_H
+#define MMRF_TYPES_H
+
+#include <stdint.h>
+
+enum Heading : uint8_t { kNorth = 0, kEast = 1, kSouth = 2, kWest = 3 };
+
+enum RobotState : uint8_t {
+  STATE_INIT,
+  STATE_CALIBRATE,
+  STATE_MENU,
+  STATE_EXPLORE,
+  STATE_PLAN_PATH,
+  STATE_SPEED_RUN,
+  STATE_FREE_RUN,
+  STATE_DIAGNOSTICS,
+  STATE_FINISHED,
+  STATE_ERROR
+};
+
+enum ExploreState : uint8_t {
+  EXPLORE_MOVE_FORWARD,
+  EXPLORE_CHECK_WALLS,
+  EXPLORE_DECIDE_NEXT,
+  EXPLORE_TURN,
+  EXPLORE_BACKTRACK,
+  EXPLORE_GOAL_FOUND
+};
+
+enum MenuItem : uint8_t {
+  MENU_EXPLORE,
+  MENU_SPEED_RUN,
+  MENU_EXPLORE_AND_RUN,
+  MENU_FREE_RUN,
+  MENU_DIAGNOSTICS,
+  MENU_COUNT
+};
+
+enum MoveType : uint8_t { MOVE_FORWARD, MOVE_TURN_LEFT, MOVE_TURN_RIGHT, MOVE_TURN_AROUND };
+
+#endif
